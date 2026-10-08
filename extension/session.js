@@ -17,8 +17,11 @@ export class Session {
     this.error = '';
     this.closed = false;
     this.hostOffset = 0;
-    this.remoteRevision = -1;
-    this.remoteEpoch = '';
+    this.remoteRevision = config.remoteRevision ?? -1;
+    this.remoteEpoch = config.remoteEpoch || '';
+    this.retiredEpochs = new Set(config.retiredEpochs || []);
+    this.transportGeneration = 0;
+    this.applyGeneration = 0;
     this.pendingChanges = new Set();
     this.nativeIntents = [];
     this.flushingNative = false;
@@ -50,11 +53,14 @@ export class Session {
       invite: this.config.role === 'host' && !this.presence.approved ? invitation(this.config) : '',
       pairingCode: this.pairingCode, peerOnline: this.config.role === 'host' ? this.presence.guest : this.presence.host,
       relay: this.config.relay, title: this.state?.queue?.[this.state.index]?.title || '',
+      canDiscard: this.phase === 'reconnecting' || !!this.error,
     };
   }
   notify() { this.hooks.status(this.view()); }
   async persist() {
-    await this.hooks.save({ ...this.config, state: this.state, revision: this.revision, desiredPlaying: this.desiredPlaying });
+    if (this.closed) return;
+    await this.hooks.save({ ...this.config, state: this.state, revision: this.revision, desiredPlaying: this.desiredPlaying,
+      received: [...this.cipher.received], remoteEpoch: this.remoteEpoch, remoteRevision: this.remoteRevision, retiredEpochs: [...this.retiredEpochs] });
   }
   async start() {
     await this.hooks.pause();
@@ -62,6 +68,8 @@ export class Session {
   }
   connect() {
     if (this.closed || !this.networkUp) return;
+    if (this.config.expiresAt && this.config.expiresAt <= Date.now()) { this.fail('Session expired. Leave locally and create a fresh session.'); return; }
+    const generation = ++this.transportGeneration;
     const address = this.config.relay.replace(/^http/, 'ws') + `/rooms/${this.config.room}/socket`;
     this.socket = new WebSocket(address);
     const socket = this.socket;
@@ -76,8 +84,11 @@ export class Session {
     socket.onmessage = event => {
       if (event.data === 'pong') { lastPong = Date.now(); return; }
       this.receiveChain = this.receiveChain.then(async () => {
+        if (this.closed || generation !== this.transportGeneration || socket !== this.socket) return;
         const frame = JSON.parse(event.data);
         if (frame.type === 'authenticated') {
+          this.config.expiresAt = frame.expiresAt;
+          await this.persist();
           if (frame.resumeToken) { this.config.token = frame.resumeToken; await this.persist(); }
           this.retries = 0;
           return;
@@ -90,8 +101,16 @@ export class Session {
         if (frame.type === 'presence') { await this.onPresence(frame); return; }
         if (frame.type === 'sealed') {
           const message = await this.cipher.open(frame);
+          if (this.closed || generation !== this.transportGeneration) return;
           this.peerSeenAt = Date.now();
-          if (frame.role === 'host' && this.remoteEpoch !== frame.epoch) { this.remoteEpoch = frame.epoch; this.remoteRevision = -1; }
+          if (frame.role === 'host' && this.remoteEpoch !== frame.epoch) {
+            if (this.retiredEpochs.has(frame.epoch)) throw new Error('Retired session message rejected.');
+            if (this.remoteEpoch) this.retiredEpochs.add(this.remoteEpoch);
+            this.remoteEpoch = frame.epoch; this.remoteRevision = -1;
+          }
+          // Persist authenticated replay watermarks before any playback side effect.
+          await this.persist();
+          if (generation !== this.transportGeneration) return;
           await this.onMessage(message);
         }
       }).catch(error => this.fail(error.message));
@@ -99,6 +118,7 @@ export class Session {
     socket.onclose = event => {
       clearInterval(this.keepalive); clearInterval(this.ticker);
       if (this.closed || socket !== this.socket) return;
+      this.transportGeneration++; this.applyGeneration++;
       this.presence = { host: false, guest: false, approved: false };
       this.peerReady = false; this.localReady = false;
       this.phase = 'reconnecting';
@@ -118,6 +138,7 @@ export class Session {
     const wasPaired = this.paired();
     this.presence = { host: !!frame.host, guest: !!frame.guest, approved: !!frame.approved };
     if (!this.paired()) {
+      this.applyGeneration++;
       this.peerReady = false; this.lastReadySent = null;
       await this.hooks.pause();
       if (this.state) this.state = { ...this.state, position: positionAt(this.state), at: Date.now(), paused: true };
@@ -140,7 +161,7 @@ export class Session {
   }
   async send(message) {
     if (!this.paired()) return;
-    this.sendChain = this.sendChain.then(async () => {
+    this.sendChain = this.sendChain.catch(() => {}).then(async () => {
       const frame = await this.cipher.seal(message);
       if (this.paired()) this.socket.send(JSON.stringify(frame));
     });
@@ -149,6 +170,7 @@ export class Session {
   async tick() {
     if (!this.paired()) return;
     if (Date.now() - this.peerSeenAt > 6500) {
+      this.applyGeneration++;
       await this.hooks.pause();
       this.socket.close(4000, 'Partner heartbeat missing');
       return;
@@ -159,6 +181,7 @@ export class Session {
     } else await this.send({ kind: 'clock', sentAt: Date.now() });
   }
   async onMessage(message) {
+    if (!this.paired() || !this.networkUp || this.closed) return;
     if (!message || typeof message.kind !== 'string') throw new Error('Invalid private session message.');
     if (message.kind === 'clock' && this.config.role === 'host' && Number.isFinite(message.sentAt)) {
       await this.send({ kind: 'clock-reply', sentAt: message.sentAt, hostAt: Date.now() }); return;
@@ -183,11 +206,14 @@ export class Session {
       this.remoteRevision = message.revision;
       const state = message.state;
       this.state = state;
+      await this.persist();
+      if (!this.paired() || !this.networkUp || this.blocked) return;
       const target = positionAt(state, Date.now() + this.hostOffset);
       const needsApply = !this.local || this.local.videoId !== state.videoId || this.local.paused !== state.paused ||
         this.local.index !== state.index || queueSignature(this.local.queue) !== queueSignature(state.queue) ||
         this.local.repeat !== state.repeat || this.local.shuffle !== state.shuffle || Math.abs(positionAt(this.local) - target) > 0.45;
       if (needsApply) await this.apply({ ...state, position: target });
+      if (!this.paired() || !this.networkUp || this.blocked || this.closed) return;
       this.phase = state.paused ? 'paused' : 'playing';
       this.notify();
       await this.persist();
@@ -199,7 +225,10 @@ export class Session {
     const incoming = event.state;
     if (this.closed) return;
     this.local = incoming;
-    if (!incoming?.supported) { await this.fail(incoming?.error || 'YouTube Music native controls are unavailable.'); return; }
+    if (!incoming?.supported) {
+      if (this.needsRestore) { this.error = incoming?.error || 'Waiting for the native player after reload.'; this.notify(); return; }
+      await this.fail(incoming?.error || 'YouTube Music native controls are unavailable.'); return;
+    }
     if (incoming.autoplayBlocked && !incoming.userInitiated) { await this.fail('YouTube Music needs a click to play. Press its Play button to resume your session.'); return; }
     if (!event.applying && !this.applying && Array.isArray(event.changes) && (incoming.userInitiated || this.config.role === 'host')) {
       for (const change of event.changes) if (['song', 'queue', 'seek', 'playback', 'modes'].includes(change)) this.pendingChanges.add(change);
@@ -207,12 +236,14 @@ export class Session {
     }
     if (this.needsRestore && incoming.supported && this.state && !this.applying) {
       this.needsRestore = false;
+      this.error = '';
       await this.apply({ ...this.state, position: positionAt(this.state), paused: true });
       this.phase = 'syncing'; this.notify();
       return;
     }
     if (this.blocked && incoming.userInitiated && validState(incoming)) { this.blocked = false; this.error = ''; }
     this.localReady = this.networkUp && !this.blocked && validState(incoming) && incoming.ready;
+    if (!this.localReady && !this.applying && this.paired()) { this.applyGeneration++; await this.hooks.pause(); }
     if (this.paired() && this.lastReadySent !== this.localReady) {
       this.lastReadySent = this.localReady;
       await this.send({ kind: 'ready', ready: this.localReady });
@@ -244,7 +275,8 @@ export class Session {
     } finally { this.flushingNative = false; }
   }
   async enqueueIntent(intent) {
-    this.commitChain = this.commitChain.then(async () => {
+    this.commitChain = this.commitChain.catch(() => {}).then(async () => {
+      if (!this.paired() || !this.networkUp || this.blocked) return;
       const incoming = intent.state;
       const changes = intent.changes;
       if (!validState(incoming) || !changes.every(change => ['song', 'queue', 'seek', 'playback', 'modes'].includes(change))) throw new Error('Invalid playback change.');
@@ -273,7 +305,7 @@ export class Session {
       if (!validState(this.state)) throw new Error('The native queue change cannot be synchronized.');
       this.revision++;
       this.error = '';
-      await this.publish();
+      await this.publish(false);
       await this.apply(this.state);
       await this.persist();
     });
@@ -285,14 +317,14 @@ export class Session {
     if (this.state.paused === shouldPause) return;
     this.state = { ...this.state, position: positionAt(this.state), at: Date.now(), paused: shouldPause };
     this.revision++;
-    await this.publish();
+    await this.publish(false);
     await this.apply(this.state);
     await this.persist();
   }
-  async publish() {
+  async publish(sampleLocal = true) {
     if (!this.state || !this.paired()) return;
     let position = positionAt(this.state);
-    if (this.local?.videoId === this.state.videoId && this.local.ready && this.local.paused === this.state.paused) {
+    if (sampleLocal && this.local?.videoId === this.state.videoId && this.local.ready && this.local.paused === this.state.paused) {
       position = this.local.position + (this.local.paused ? 0 : Math.max(0, Date.now() - this.local.at) / 1000);
     }
     this.state = { ...this.state, position: Math.min(this.state.duration, position), at: Date.now() };
@@ -300,19 +332,26 @@ export class Session {
     this.phase = this.state.paused ? 'paused' : 'playing'; this.notify();
   }
   async apply(state) {
+    const generation = this.applyGeneration;
+    if (!state.paused && (!this.paired() || !this.networkUp || this.blocked)) return;
     this.applying = true;
     try {
       const result = await this.hooks.apply(state);
+      if (generation !== this.applyGeneration || this.closed) { await this.hooks.pause(); return; }
       this.local = result;
       this.localReady = validState(result) && result.ready;
       if (this.paired()) { await this.send({ kind: 'ready', ready: this.localReady }); this.lastReadySent = this.localReady; }
-    } finally { this.applying = false; this.flushNative().catch(error => this.fail(error.message)); }
+    } catch (error) { if (generation === this.applyGeneration && !this.closed) throw error; }
+    finally { this.applying = false; this.flushNative().catch(error => this.fail(error.message)); }
   }
   approve() {
     if (this.config.role !== 'host' || !this.presence.guest || this.socket?.readyState !== WebSocket.OPEN) throw new Error('Your partner must join before confirmation.');
     this.socket.send(JSON.stringify({ type: 'approve' }));
   }
   async fail(message) {
+    if (this.closed) return;
+    if (this.needsRestore) { this.phase = 'reconnecting'; this.error = message; this.notify(); return; }
+    this.applyGeneration++;
     this.error = message;
     this.phase = 'paused';
     this.desiredPlaying = false;
@@ -328,6 +367,7 @@ export class Session {
   }
   async detached() {
     if (this.closed) return;
+    this.applyGeneration++;
     this.needsRestore = true;
     this.localReady = false;
     this.lastReadySent = false;
@@ -342,6 +382,7 @@ export class Session {
   async network(online) {
     this.networkUp = online;
     if (!online) {
+      this.applyGeneration++; this.transportGeneration++;
       this.localReady = false; this.lastReadySent = false;
       await this.hooks.pause().catch(() => {});
       if (this.paired()) await this.send({ kind: 'ready', ready: false }).catch(() => {});
@@ -360,8 +401,13 @@ export class Session {
       this.socket.send(JSON.stringify({ type: 'end' }));
     });
   }
+  async discard() {
+    await this.finish();
+    return { active: false, notice: 'Left this device. Relay closure was not confirmed; the invitation expires within six hours. Ask your partner to end the session if it is still active.' };
+  }
   async finish() {
     this.closed = true;
+    this.applyGeneration++; this.transportGeneration++;
     clearInterval(this.keepalive); clearInterval(this.ticker); clearTimeout(this.retryTimer);
     this.socket?.close(1000, 'Session ended');
     await this.hooks.pause().catch(() => {});

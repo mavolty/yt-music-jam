@@ -5,7 +5,12 @@ import { validState } from './protocol.js';
 let session = null;
 const ports = new Map();
 const sendNative = async (tabId, message) => {
-  const result = await chrome.tabs.sendMessage(tabId, message);
+  let result;
+  try { result = await chrome.tabs.sendMessage(tabId, message); }
+  catch (error) {
+    if (session?.config.tabId === tabId && !session.closed) await session.detached();
+    throw error;
+  }
   if (!result?.ok) throw new Error(result?.error || 'The YouTube Music tab is unavailable. Reload it.');
   return result.state;
 };
@@ -86,6 +91,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
     if (message.type === 'approve') { session?.approve(); return session?.view(); }
     if (message.type === 'end') { await session?.end(); return { active: false }; }
+    if (message.type === 'discard') return session ? session.discard() : { active: false };
     if (message.type === 'create') {
       if (session && !session.closed) throw new Error('End the existing session first.');
       const relay = relayOrigin(message.relay);

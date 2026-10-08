@@ -6,7 +6,8 @@
 <script>
 (() => {
   let paused = false, buffered = true, position = 20, at = Date.now(), likes = 0;
-  let items = [], currentId = 'AAAAAAAAAAA', nextId = 0;
+  let items = [], currentId = 'AAAAAAAAAAA', nextId = 0, loadDelay = 0;
+  const ignored = new Set();
   const modes = { repeatMode: 'NONE', shuffleEnabled: false };
   const item = (id, selected = false) => ({ playlistPanelVideoRenderer: { videoId: id, title: { simpleText: `Track ${id[0]}` }, longBylineText: { simpleText: 'Fixture artist' }, lengthText: { simpleText: '4:00' }, selected, navigationEndpoint: { watchEndpoint: { videoId: id, index: nextId++, watchEndpointMusicSupportedConfigs: { watchEndpointMusicConfig: { musicVideoType: 'MUSIC_VIDEO_TYPE_ATV' } } } } } });
   items = [item('AAAAAAAAAAA', true), item('BBBBBBBBBBB')];
@@ -16,7 +17,10 @@
   const select = index => {
     items = items.map((entry, i) => ({ playlistPanelVideoRenderer: { ...entry.playlistPanelVideoRenderer, selected: i === index } }));
     const id = items[index]?.playlistPanelVideoRenderer.videoId;
-    if (id && id !== currentId) { currentId = id; position = 0; at = Date.now(); }
+    if (id && id !== currentId) {
+      const load = () => { currentId = id; position = 0; at = Date.now(); };
+      if (loadDelay) setTimeout(load, loadDelay); else load();
+    }
     render();
   };
   const media = document.createElement('video');
@@ -30,6 +34,7 @@
   };
   const queue = { playerApi: player, getItems: () => items, getCurrentItemIndex: () => items.findIndex(entry => entry.playlistPanelVideoRenderer.selected),
     store: { getState: () => ({ queue: { ...modes, items } }), dispatch: action => {
+      if (ignored.has(action.type)) return;
       if (action.type === 'CLEAR') { items = []; nextId = 0; }
       if (action.type === 'ADD_ITEMS') {
         const added = action.payload.items.map(entry => ({ playlistPanelVideoRenderer: { ...entry.playlistPanelVideoRenderer, navigationEndpoint: { watchEndpoint: { ...entry.playlistPanelVideoRenderer.navigationEndpoint.watchEndpoint, index: nextId++ } } } }));
@@ -54,7 +59,8 @@
   document.querySelector('#replace').onclick = () => { items = [item('EEEEEEEEEEE', true), item('FFFFFFFFFFF')]; select(0); };
   document.querySelector('#like').onclick = () => likes++;
   window.fixture = { snapshot: () => ({ videoId: currentId, paused, position: time(), queue: items.map(entry => entry.playlistPanelVideoRenderer.videoId), likes }),
-    buffer: value => { update(); buffered = !value; }, queue, player };
+    buffer: value => { update(); buffered = !value; }, ignore: types => { ignored.clear(); types.forEach(type => ignored.add(type)); },
+    loadDelay: value => { loadDelay = value; }, queue, player };
   render();
 })();
 </script></html>

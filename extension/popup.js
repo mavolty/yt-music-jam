@@ -13,15 +13,16 @@ function render(value) {
   view = value;
   element('setup').hidden = !!value.active;
   element('session').hidden = !value.active;
-  if (!value.active) return;
+  if (!value.active) { if (value.notice) error(value.notice); return; }
   element('status').textContent = value.label;
   element('track').textContent = value.title;
   element('invite-box').hidden = !value.invite;
   element('pairing').hidden = !value.pairingCode;
   element('pairing-code').textContent = value.pairingCode;
   element('approve').hidden = !value.approvalNeeded;
+  element('discard').hidden = !value.canDiscard;
   element('status-dot').style.background = value.error ? '#df9d7b' : '#a8d8b9';
-  if (value.error) error(value.error);
+  error(value.error || '');
 }
 async function permission(relay) {
   const origins = [`${relay}/*`];
@@ -64,6 +65,7 @@ element('join-panel').addEventListener('submit', event => {
 });
 element('approve').addEventListener('click', () => run(async () => render(await request({ type: 'approve' }))));
 element('end').addEventListener('click', () => run(async () => render(await request({ type: 'end' }))));
+element('discard').addEventListener('click', () => run(async () => render(await request({ type: 'discard' }))));
 element('copy-invite').addEventListener('click', () => run(async () => {
   try { await navigator.clipboard.writeText(view.invite); element('copy-invite').textContent = 'Invitation copied'; }
   catch { element('invite-fallback').hidden = false; element('invite-fallback').value = view.invite; element('invite-fallback').select(); }

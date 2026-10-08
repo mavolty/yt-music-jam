@@ -59,7 +59,9 @@ Initial limit: 1,000 queued songs and bounded encrypted frames. Account-specific
 
 If either player buffers, both pause. Browser offline events close the session transport; missing peer heartbeat pauses playback within roughly eight seconds even when a TCP connection looks alive. Reconnects reconcile the queue/position. If autoplay is blocked, click Play in YouTube Music. The creator coordinates ordering, so their laptop must remain online. Simultaneous additions are merged; conflicting song/playback choices are ordered by the creator's session engine.
 
-A full Chrome restart clears session-only credentials: create a fresh session. If the relay is unreachable, **End session** cannot claim to invalidate the invitation immediately; reconnect to end it, or let the six-hour room expiry invalidate it. Personal playlists are not modified.
+A full Chrome restart clears session-only credentials: create a fresh session. If the relay is unreachable, **End session** cannot claim to invalidate the invitation immediately. **Leave this device** clears the local session so you can start again; it does not confirm server closure. Ask your partner to end the old session, or let its six-hour expiry invalidate it. Rejected and expired sessions also offer local leave. Personal playlists are not modified.
+
+Authenticated receive sequence watermarks and retired message epochs are retained in session storage across extension worker reconstruction. A safety pause cancels pending native playback updates. The adapter checks the applied queue, selection, repeat and shuffle before resuming; ignored native writes produce an error and leave playback paused.
 
 Before everyday use, complete [the live two-laptop checklist](docs/live-verification.md).
 

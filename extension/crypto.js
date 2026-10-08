@@ -38,7 +38,7 @@ export class Cipher {
     this.role = config.role;
     this.epoch = randomId();
     this.sequence = 0;
-    this.received = new Map();
+    this.received = new Map(config.received || []);
     this.key = crypto.subtle.importKey('raw', decode(config.key), 'AES-GCM', false, ['encrypt', 'decrypt']);
   }
   async seal(message) {

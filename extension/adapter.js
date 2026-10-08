@@ -9,6 +9,9 @@
   let suppressedUntil = 0;
   let applyChain = Promise.resolve();
   let autoplayBlocked = false;
+  let remoteVersion = 0;
+  let gesture = 0;
+  const interactions = new WeakMap();
   const observedPlayers = new WeakSet();
   const keys = new Map();
   const node = tag => /** @type {any} */ (document.querySelector(tag));
@@ -103,13 +106,17 @@
       } }], accessibility: { accessibilityData: { label: 'Song actions' } } } },
     } };
   }
-  async function apply(state) {
+  let generation = 0;
+  async function apply(state, expectedGeneration) {
+    const check = () => { if (generation !== expectedGeneration) throw new Error('Playback update cancelled by a safety pause.'); };
+    check();
     if (!state || !Array.isArray(state.queue) || state.queue.length < 1 || state.queue.length > MAX_QUEUE ||
       !ID.test(state.videoId) || state.queue[state.index]?.videoId !== state.videoId ||
       !state.queue.every(item => ID.test(item.videoId) && /^[\w-]{1,80}$/.test(item.key))) throw new Error('Invalid shared playback state.');
     const { queue, player } = access();
     if (!queue?.store?.dispatch || !player?.pauseVideo || !player?.playVideo || !player?.seekTo) throw new Error('YouTube Music playback controls are unavailable.');
     applying = true;
+    remoteVersion++;
     try {
       const current = snapshot();
       const queueChanged = JSON.stringify(current.queue?.map(t => [t.key, t.videoId])) !== JSON.stringify(state.queue.map(t => [t.key, t.videoId]));
@@ -130,18 +137,28 @@
         const deadline = Date.now() + 12000;
         while (Date.now() < deadline && (player.getVideoData()?.video_id || player.getVideoData()?.videoId) !== state.videoId) {
           await new Promise(resolve => setTimeout(resolve, 100));
+          check();
         }
         if ((player.getVideoData()?.video_id || player.getVideoData()?.videoId) !== state.videoId) {
           throw new Error('YouTube Music could not load the shared song. This song may be unavailable, or the native queue interface changed.');
         }
       }
+      const matches = actual => actual.supported && actual.videoId === state.videoId && actual.index === state.index &&
+        JSON.stringify(actual.queue.map(t => [t.key, t.videoId])) === JSON.stringify(state.queue.map(t => [t.key, t.videoId])) &&
+        actual.repeat === state.repeat && actual.shuffle === state.shuffle;
+      const settleBy = Date.now() + 1200;
+      while (!matches(snapshot()) && Date.now() < settleBy) { await new Promise(resolve => setTimeout(resolve, 100)); check(); }
+      if (!matches(snapshot())) throw new Error('YouTube Music did not apply the shared queue or playback modes. Its native interface may have changed.');
+      check();
       const target = Math.min(state.duration, Math.max(0, state.position));
       if (songChanged || Math.abs(Number(player.getCurrentTime()) - target) > 0.35) player.seekTo(target, true);
-      if (state.paused) player.pauseVideo();
+      if (state.paused || !snapshot().ready) player.pauseVideo();
       else {
+        check();
         autoplayBlocked = false;
         player.playVideo();
         await new Promise(resolve => setTimeout(resolve, 200));
+        check();
         if (autoplayBlocked) throw new Error('YouTube Music needs a click to play. Press its Play button to resume your session.');
       }
       suppressedUntil = Date.now() + 900;
@@ -157,10 +174,11 @@
       try { send({ kind: 'reply', id: message.id, state: snapshot() }); }
       catch (error) { send({ kind: 'reply', id: message.id, error: error.message }); }
     }
-    if (message.kind === 'pause') { access().player?.pauseVideo?.(); suppressedUntil = Date.now() + 900; return; }
+    if (message.kind === 'pause') { generation++; access().player?.pauseVideo?.(); suppressedUntil = Date.now() + 900; return; }
     if (message.kind === 'apply') {
+      const expectedGeneration = generation;
       applyChain = applyChain.catch(() => {}).then(async () => {
-        try { send({ kind: 'reply', id: message.id, state: await apply(message.state) }); }
+        try { send({ kind: 'reply', id: message.id, state: await apply(message.state, expectedGeneration) }); }
         catch (error) { access().player?.pauseVideo?.(); send({ kind: 'reply', id: message.id, error: error.message }); }
       });
     }
@@ -168,18 +186,37 @@
   for (const type of ['click', 'keydown', 'pointerup']) document.addEventListener(type, event => {
     if (event.isTrusted) {
       let before; try { before = snapshot(); } catch {}
+      const interaction = { before, version: remoteVersion, gesture: ++gesture, emitted: false };
+      interactions.set(event, interaction);
       lastInteraction = Date.now();
       autoplayBlocked = false;
       // A deliberate native action must not be discarded as feedback from a recent remote update.
       suppressedUntil = 0;
       setTimeout(() => {
+        if (interaction.emitted || interaction.version !== remoteVersion || interaction.gesture !== gesture) return;
         try {
           const state = snapshot(); const changes = difference(before, state);
-          if (changes.length) send({ kind: 'intent', state, previous: before, changes });
+          if (changes.length) { send({ kind: 'intent', state, previous: before, changes }); previous = state; }
         } catch {}
         poll();
       }, 0);
     }
   }, true);
+  // Read synchronous native handlers in the same event, before another remote
+  // update can turn a user's addition into an apparent removal. Polling remains
+  // available for asynchronous native actions.
+  for (const type of ['click', 'keydown', 'pointerup']) document.addEventListener(type, event => {
+    const interaction = interactions.get(event);
+    if (!interaction || interaction.version !== remoteVersion) return;
+    try {
+      const state = snapshot(); const changes = difference(interaction.before, state);
+      if (changes.length) {
+        interaction.emitted = true;
+        send({ kind: 'intent', state, previous: interaction.before, changes });
+        previous = state;
+        poll();
+      }
+    } catch {}
+  });
   setInterval(poll, 400);
 })();

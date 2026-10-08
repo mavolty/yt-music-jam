@@ -32,6 +32,8 @@ This is the remaining acceptance check. Fixture smoke checks cannot establish re
 - Confirm the installed extension grants only YouTube Music and the configured relay, with `storage` as its sole named API permission.
 - A third browser should not join an occupied room, and the original guest invitation should not be reusable after admission.
 - End the session from either laptop. Both players should pause, both extension sessions should clear, and the old invitation should no longer work.
+- Try a consumed invitation. Confirm the rejection is visible, choose **Leave this device**, then join a fresh invitation. Local leave must explain that server closure was not confirmed.
+- Disconnect while a new song is loading. Wait for the song to finish loading while still offline: neither player should resume until reconnect/reconciliation.
 - Review relay logging settings without copying any invitation or credentials into diagnostics. The adapter never exports page cookies or Google tokens.
 
 Record results with browser versions and the operation that fails, not private invitations or account credentials. If native queue control fails, keep the error visible and report that interface failure; do not call the app ready for everyday use.

@@ -44,7 +44,6 @@ Native queue APIs may change; visibly stop on an unsupported adapter rather than
 
 ## Task 4: Review and handoff
 
-- [ ] Run static checks, build/dry-run and browser/protocol integration smoke verification. No unit tests.
-- [ ] Fresh code review of privacy, native adapter assumptions and convergence; fix material findings and rerun affected checks.
-- [ ] Write README and installation/deployment/live verification guide; provide installable archive and honest validation status.
-
+- [x] Run static checks, build/dry-run and browser/protocol integration smoke verification. No unit tests.
+- [x] Fresh code review of privacy, native adapter assumptions and convergence; fix material findings and rerun affected checks.
+- [x] Write README and installation/deployment/live verification guide; provide installable archive and honest validation status.
