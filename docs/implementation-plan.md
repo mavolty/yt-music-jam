@@ -25,22 +25,22 @@ Native queue APIs may change; visibly stop on an unsupported adapter rather than
 
 ## Task 1: Native page adapter and inspectable packaging
 
-- [ ] Create `extension/adapter.js` in MAIN world and a narrow content bridge in isolated world. Snapshot only song IDs, displayed metadata, active queue and playback state.
-- [ ] Prove current native object/method names against the public live page where accessible. Keep unsupported states explicit.
-- [ ] Observe user changes and apply playback/queue state while suppressing reflected events. Volume, saved playlists and likes remain local.
-- [ ] Create a packaged Chrome manifest and static-check/build pipeline; dependency/cache artifacts remain local.
+- [x] Create `extension/adapter.js` in MAIN world and a narrow content bridge in isolated world. Snapshot only song IDs, displayed metadata, active queue and playback state.
+- [x] Prove current native object/method names against the public live page where accessible. Keep unsupported states explicit.
+- [x] Observe user changes and apply playback/queue state while suppressing reflected events. Volume, saved playlists and likes remain local.
+- [x] Create a packaged Chrome manifest and static-check/build pipeline; dependency/cache artifacts remain local.
 
 ## Task 2: Private relay and encryption
 
-- [ ] Create `relay/worker.js`: provision rooms, require participant credentials in the first WebSocket message, enforce pair membership, relay bounded opaque messages, expire/end rooms and clean storage.
-- [ ] Create `extension/crypto.js`: random room/key material, AES-GCM authenticated message encryption, invitation parsing and replay checks.
-- [ ] Verify relay using real local WebSocket connections; reject invalid credentials, third participants and stale invites.
+- [x] Create `relay/worker.js`: provision rooms, require participant credentials in the first WebSocket message, enforce pair membership, relay bounded opaque messages, expire/end rooms and clean storage.
+- [x] Create `extension/crypto.js`: random room/key material, AES-GCM authenticated message encryption, invitation parsing and replay checks.
+- [x] Verify relay using real local WebSocket connections; reject invalid credentials, third participants and stale invites.
 
 ## Task 3: Session engine and native integration
 
-- [ ] Create `extension/session.js` and `background.js`: session-only state, browser restart/reconnect handling, creator ordering, peer clock offsets, buffering safety, drift correction, invite copy, end/leave lifecycle.
-- [ ] Create the create/join/status popup; no replacement music controls.
-- [ ] Browser smoke verification with two extension contexts and native-page fixtures; report live signed-in limitations separately.
+- [x] Create `extension/session.js` and `background.js`: session-only state, browser restart/reconnect handling, creator ordering, peer clock offsets, buffering safety, drift correction, invite copy, end/leave lifecycle.
+- [x] Create the create/join/status popup; no replacement music controls.
+- [x] Browser smoke verification with two extension contexts and native-page fixtures; report live signed-in limitations separately.
 
 ## Task 4: Review and handoff
 

@@ -1,0 +1,60 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Native player interface fixture — not live YouTube Music</title>
+<style>body{background:#111;color:#eee;font:16px system-ui;padding:30px}button{margin:5px;padding:10px}#queue{line-height:2}</style>
+<h1>Native player interface fixture</h1><p>This exercises the real extension and relay, using a simulated native page.</p>
+<ytmusic-player></ytmusic-player><ytmusic-player-bar></ytmusic-player-bar><ytmusic-player-queue></ytmusic-player-queue>
+<div><button id="play">Play / pause</button><button id="seek">Seek +10s</button><button id="next">Next song</button><button id="add-c">Add C</button><button id="add-d">Add D</button><button id="remove">Remove last</button><button id="reorder">Move last to next</button><button id="replace">Play another playlist</button><button id="like">Like locally</button></div><ol id="queue"></ol>
+<script>
+(() => {
+  let paused = false, buffered = true, position = 20, at = Date.now(), likes = 0;
+  let items = [], currentId = 'AAAAAAAAAAA', nextId = 0;
+  const modes = { repeatMode: 'NONE', shuffleEnabled: false };
+  const item = (id, selected = false) => ({ playlistPanelVideoRenderer: { videoId: id, title: { simpleText: `Track ${id[0]}` }, longBylineText: { simpleText: 'Fixture artist' }, lengthText: { simpleText: '4:00' }, selected, navigationEndpoint: { watchEndpoint: { videoId: id, index: nextId++, watchEndpointMusicSupportedConfigs: { watchEndpointMusicConfig: { musicVideoType: 'MUSIC_VIDEO_TYPE_ATV' } } } } } });
+  items = [item('AAAAAAAAAAA', true), item('BBBBBBBBBBB')];
+  const time = () => position + (paused || !buffered ? 0 : (Date.now() - at) / 1000);
+  const update = () => { position = time(); at = Date.now(); };
+  const render = () => { document.querySelector('#queue').innerHTML = items.map(entry => `<li>${entry.playlistPanelVideoRenderer.selected ? '▶ ' : ''}${entry.playlistPanelVideoRenderer.title.simpleText}</li>`).join(''); };
+  const select = index => {
+    items = items.map((entry, i) => ({ playlistPanelVideoRenderer: { ...entry.playlistPanelVideoRenderer, selected: i === index } }));
+    const id = items[index]?.playlistPanelVideoRenderer.videoId;
+    if (id && id !== currentId) { currentId = id; position = 0; at = Date.now(); }
+    render();
+  };
+  const media = document.createElement('video');
+  Object.defineProperty(media, 'readyState', { get: () => buffered ? 4 : 1 });
+  Object.defineProperty(media, 'duration', { get: () => 240 });
+  Object.defineProperty(media, 'currentTime', { get: time });
+  document.body.appendChild(media);
+  const player = { getVideoData: () => ({ video_id: currentId }), getPlayerState: () => paused ? 2 : !buffered ? 3 : 1,
+    getDuration: () => 240, getCurrentTime: time, pauseVideo: () => { update(); paused = true; },
+    playVideo: () => { update(); paused = false; }, seekTo: value => { position = value; at = Date.now(); },
+  };
+  const queue = { playerApi: player, getItems: () => items, getCurrentItemIndex: () => items.findIndex(entry => entry.playlistPanelVideoRenderer.selected),
+    store: { getState: () => ({ queue: { ...modes, items } }), dispatch: action => {
+      if (action.type === 'CLEAR') { items = []; nextId = 0; }
+      if (action.type === 'ADD_ITEMS') {
+        const added = action.payload.items.map(entry => ({ playlistPanelVideoRenderer: { ...entry.playlistPanelVideoRenderer, navigationEndpoint: { watchEndpoint: { ...entry.playlistPanelVideoRenderer.navigationEndpoint.watchEndpoint, index: nextId++ } } } }));
+        items.splice(action.payload.index, 0, ...added);
+        select(Math.max(0, items.findIndex(entry => entry.playlistPanelVideoRenderer.selected)));
+      }
+      if (action.type === 'SET_INDEX') select(action.payload);
+      if (action.type === 'SET_REPEAT') modes.repeatMode = action.payload;
+      if (action.type === 'SET_SHUFFLE_ENABLED') modes.shuffleEnabled = action.payload;
+      render();
+    } },
+  };
+  document.querySelector('ytmusic-player-queue').polymerController = { queue };
+  document.querySelector('ytmusic-player').polymerController = { playerApi: player };
+  document.querySelector('ytmusic-player-bar').polymerController = { playerApi: player, queue };
+  document.querySelector('#play').onclick = () => paused ? player.playVideo() : player.pauseVideo();
+  document.querySelector('#seek').onclick = () => player.seekTo(time() + 10);
+  document.querySelector('#next').onclick = () => select((queue.getCurrentItemIndex() + 1) % items.length);
+  for (const [button, id] of [['add-c', 'CCCCCCCCCCC'], ['add-d', 'DDDDDDDDDDD']]) document.querySelector(`#${button}`).onclick = () => { items.push(item(id)); render(); };
+  document.querySelector('#remove').onclick = () => { if (items.length > 1) items.pop(); render(); };
+  document.querySelector('#reorder').onclick = () => { if (items.length > 2) items.splice(1, 0, items.pop()); render(); };
+  document.querySelector('#replace').onclick = () => { items = [item('EEEEEEEEEEE', true), item('FFFFFFFFFFF')]; select(0); };
+  document.querySelector('#like').onclick = () => likes++;
+  window.fixture = { snapshot: () => ({ videoId: currentId, paused, position: time(), queue: items.map(entry => entry.playlistPanelVideoRenderer.videoId), likes }),
+    buffer: value => { update(); buffered = !value; }, queue, player };
+  render();
+})();
+</script></html>

@@ -1,0 +1,22 @@
+{
+  "name": "yt-music-together",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Private synchronization for two native YouTube Music browser tabs",
+  "scripts": {
+    "check": "tsc --noEmit && node scripts/check.mjs",
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/wrangler.mjs dev --local --port 8787 --persist-to .cache/worker-state",
+    "relay:dry-run": "node scripts/wrangler.mjs deploy --dry-run --outdir artifacts/relay",
+    "smoke": "node scripts/smoke.mjs",
+    "inspect:ytm": "node scripts/inspect-ytm.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261008.1",
+    "@types/chrome": "0.3.4",
+    "playwright": "1.64.0",
+    "typescript": "5.9.3",
+    "wrangler": "4.148.0"
+  }
+}
