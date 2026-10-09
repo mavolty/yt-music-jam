@@ -28,7 +28,7 @@ export class Session {
     this.commitChain = Promise.resolve();
     this.receiveChain = Promise.resolve();
     this.sendChain = Promise.resolve();
-    this.applying = false;
+    this.applying = 0;
     this.retries = 0;
     this.pairingCode = '';
     this.lastSnapshotAt = 0;
@@ -230,6 +230,9 @@ export class Session {
       await this.fail(incoming?.error || 'YouTube Music native controls are unavailable.'); return;
     }
     if (incoming.autoplayBlocked && !incoming.userInitiated) { await this.fail('YouTube Music needs a click to play. Press its Play button to resume your session.'); return; }
+    // Intermediate native states belong to the outstanding command. Its final
+    // acknowledgement updates readiness; polling must not interrupt startup.
+    if (this.applying) return;
     if (!event.applying && !this.applying && Array.isArray(event.changes) && (incoming.userInitiated || this.config.role === 'host')) {
       for (const change of event.changes) if (['song', 'queue', 'seek', 'playback', 'modes'].includes(change)) this.pendingChanges.add(change);
       if (!this.pendingBefore && event.previous?.queue) this.pendingBefore = event.previous.queue;
@@ -258,7 +261,24 @@ export class Session {
     else await this.send(intent);
   }
   async nativeIntent(event) {
-    if (!this.paired() || !validState(event.state) || !validQueue(event.previous?.queue, true) || !Array.isArray(event.changes)) return;
+    if (this.closed || !this.networkUp || !this.paired() || !validState(event.state) || !validQueue(event.previous?.queue, true) || !Array.isArray(event.changes)) return;
+    // Intent arrives before the following snapshot. Let the same deliberate
+    // click recover a blocked player instead of dropping it at enqueueIntent.
+    if (this.blocked && event.state.userInitiated) { this.blocked = false; this.error = ''; }
+    // This event precedes the polling snapshot. Announce its actual readiness
+    // first so neither role can start playback using stale ready flags.
+    if (this.applying && event.state.userInitiated && event.changes.includes('playback') && event.state.paused && !event.state.buffering) {
+      this.applyGeneration++;
+      await this.hooks.pause();
+    }
+    if (!this.applying) {
+      this.local = event.state;
+      this.localReady = !this.blocked && event.state.ready;
+      if (this.lastReadySent !== this.localReady) {
+        await this.send({ kind: 'ready', ready: this.localReady });
+        this.lastReadySent = this.localReady;
+      }
+    }
     this.nativeIntents.push({ kind: 'intent', state: event.state, before: event.previous.queue, changes: event.changes });
     if (this.nativeIntents.length > 30) throw new Error('Too many pending native actions. Pause and let the players synchronize.');
     await this.flushNative();
@@ -291,7 +311,10 @@ export class Session {
       if (index < 0) index = Math.min(prior.index, queue.length - 1);
       if (index < 0 || queue.length > 1000) throw new Error('The shared queue is empty or too large.');
       const songChanged = queue[index].videoId !== prior.videoId || queue[index].key !== prior.queue[prior.index].key;
-      if (changes.includes('playback') && !incoming.buffering && (!incoming.ended || incoming.userInitiated)) this.desiredPlaying = !incoming.paused;
+      // Native Play can report BUFFERING before PLAYING. Preserve the user's
+      // request while readiness pauses the shared timeline; automatic buffering
+      // and end-of-track transitions must not replace that request.
+      if (changes.includes('playback') && (incoming.userInitiated || (!incoming.buffering && !incoming.ended))) this.desiredPlaying = !incoming.paused;
       if (songChanged) this.peerReady = false;
       this.state = {
         ...prior, videoId: queue[index].videoId, queue, index,
@@ -334,7 +357,7 @@ export class Session {
   async apply(state) {
     const generation = this.applyGeneration;
     if (!state.paused && (!this.paired() || !this.networkUp || this.blocked)) return;
-    this.applying = true;
+    this.applying++;
     try {
       const result = await this.hooks.apply(state);
       if (generation !== this.applyGeneration || this.closed) { await this.hooks.pause(); return; }
@@ -342,7 +365,7 @@ export class Session {
       this.localReady = validState(result) && result.ready;
       if (this.paired()) { await this.send({ kind: 'ready', ready: this.localReady }); this.lastReadySent = this.localReady; }
     } catch (error) { if (generation === this.applyGeneration && !this.closed) throw error; }
-    finally { this.applying = false; this.flushNative().catch(error => this.fail(error.message)); }
+    finally { this.applying--; this.flushNative().catch(error => this.fail(error.message)); }
   }
   approve() {
     if (this.config.role !== 'host' || !this.presence.guest || this.socket?.readyState !== WebSocket.OPEN) throw new Error('Your partner must join before confirmation.');

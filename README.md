@@ -4,6 +4,10 @@ A private Chrome extension for two people listening through their own YouTube Mu
 
 **Status: working integration prototype, not yet verified with two signed-in Premium accounts.** The public site's native queue/player entry points were inspected on 2026-10-08. Live audio was not available in the fresh inspection browser. The integration smoke runner uses real Chromium extension contexts and a real local Worker, with a simulated native player page. This does not establish reliable compatibility with the signed-in YouTube Music website.
 
+Version **0.1.2** fixes a reproduced play/pause feedback loop in the published 0.1.1 extension. Startup waits for actual playing readiness, paused media with its current frame can resume, and delayed native Pause still cancels a pending start. See [the playback fix and verification record](docs/playback-fix-0.1.2.md).
+
+To update both laptops, end the existing session, extract the new package into the **existing extension folder**, click **Reload** in `chrome://extensions`, and reload both YouTube Music tabs. Check that Chrome shows version **0.1.2**, then create a fresh session and invitation. Replace the existing files rather than loading a second active copy of the extension.
+
 ## First-time setup
 
 1. Deploy the relay using [the deployment guide](docs/deployment.md). Deployment requires your Cloudflare account; nothing has been deployed automatically.

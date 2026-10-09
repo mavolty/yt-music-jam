@@ -25,6 +25,7 @@ This is the remaining acceptance check. Fixture smoke checks cannot establish re
 - Reload each YouTube Music tab separately. The session should recover its active queue without treating the default page queue as a new selection.
 - Put the creator's laptop to sleep. The other player should pause after losing peer heartbeat. Wake and reconnect.
 - If autoplay is blocked, click the native Play button and confirm both resume.
+- On version 0.1.2, resume after a pause or song load and confirm playback settles rather than repeatedly toggling. Press native Pause while playback is starting; both players should stay paused. A startup that cannot finish should show a loading error rather than continually retry; after loading recovers, one native Play click should retry it.
 - Listen for at least ten minutes, including song boundaries. Compare positions periodically; target stable offset within roughly 500 ms with no repeated corrective seeks. This does not promise sample-perfect alignment or gapless simultaneous transitions.
 
 ## Privacy and ending

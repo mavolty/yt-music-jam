@@ -8,6 +8,7 @@
   let paused = false, buffered = true, position = 20, at = Date.now(), likes = 0;
   let items = [], currentId = 'AAAAAAAAAAA', nextId = 0, loadDelay = 0;
   const ignored = new Set();
+  let startDelay = 0, startTimer, controlDelay = 0, controlTimer, pauseDelay = 0, pausedCurrentData = false, playCalls = 0, pauseCalls = 0;
   const modes = { repeatMode: 'NONE', shuffleEnabled: false };
   const item = (id, selected = false) => ({ playlistPanelVideoRenderer: { videoId: id, title: { simpleText: `Track ${id[0]}` }, longBylineText: { simpleText: 'Fixture artist' }, lengthText: { simpleText: '4:00' }, selected, navigationEndpoint: { watchEndpoint: { videoId: id, index: nextId++, watchEndpointMusicSupportedConfigs: { watchEndpointMusicConfig: { musicVideoType: 'MUSIC_VIDEO_TYPE_ATV' } } } } } });
   items = [item('AAAAAAAAAAA', true), item('BBBBBBBBBBB')];
@@ -24,13 +25,26 @@
     render();
   };
   const media = document.createElement('video');
-  Object.defineProperty(media, 'readyState', { get: () => buffered ? 4 : 1 });
+  Object.defineProperty(media, 'readyState', { get: () => pausedCurrentData && paused ? 2 : buffered ? 4 : startTimer ? 2 : 1 });
   Object.defineProperty(media, 'duration', { get: () => 240 });
   Object.defineProperty(media, 'currentTime', { get: time });
   document.body.appendChild(media);
   const player = { getVideoData: () => ({ video_id: currentId }), getPlayerState: () => paused ? 2 : !buffered ? 3 : 1,
-    getDuration: () => 240, getCurrentTime: time, pauseVideo: () => { update(); paused = true; },
-    playVideo: () => { update(); paused = false; }, seekTo: value => { position = value; at = Date.now(); },
+    getDuration: () => 240, getCurrentTime: time, pauseVideo: () => { clearTimeout(controlTimer); update(); paused = true; pauseCalls++; },
+    playVideo: () => {
+      const wasPaused = paused;
+      playCalls++;
+      const start = () => {
+        update(); paused = false;
+        if (wasPaused && startDelay) {
+          buffered = false;
+          clearTimeout(startTimer);
+          startTimer = setTimeout(() => { update(); buffered = true; startTimer = null; }, startDelay);
+        }
+      };
+      if (wasPaused && controlDelay) { clearTimeout(controlTimer); controlTimer = setTimeout(start, controlDelay); }
+      else start();
+    }, seekTo: value => { position = value; at = Date.now(); },
   };
   const queue = { playerApi: player, getItems: () => items, getCurrentItemIndex: () => items.findIndex(entry => entry.playlistPanelVideoRenderer.selected),
     store: { getState: () => ({ queue: { ...modes, items } }), dispatch: action => {
@@ -50,7 +64,7 @@
   document.querySelector('ytmusic-player-queue').polymerController = { queue };
   document.querySelector('ytmusic-player').polymerController = { playerApi: player };
   document.querySelector('ytmusic-player-bar').polymerController = { playerApi: player, queue };
-  document.querySelector('#play').onclick = () => paused ? player.playVideo() : player.pauseVideo();
+  document.querySelector('#play').onclick = () => paused ? player.playVideo() : pauseDelay ? setTimeout(() => player.pauseVideo(), pauseDelay) : player.pauseVideo();
   document.querySelector('#seek').onclick = () => player.seekTo(time() + 10);
   document.querySelector('#next').onclick = () => select((queue.getCurrentItemIndex() + 1) % items.length);
   for (const [button, id] of [['add-c', 'CCCCCCCCCCC'], ['add-d', 'DDDDDDDDDDD']]) document.querySelector(`#${button}`).onclick = () => { items.push(item(id)); render(); };
@@ -58,9 +72,13 @@
   document.querySelector('#reorder').onclick = () => { if (items.length > 2) items.splice(1, 0, items.pop()); render(); };
   document.querySelector('#replace').onclick = () => { items = [item('EEEEEEEEEEE', true), item('FFFFFFFFFFF')]; select(0); };
   document.querySelector('#like').onclick = () => likes++;
-  window.fixture = { snapshot: () => ({ videoId: currentId, paused, position: time(), queue: items.map(entry => entry.playlistPanelVideoRenderer.videoId), likes }),
+  window.fixture = { snapshot: () => ({ videoId: currentId, paused, buffered, playCalls, pauseCalls, position: time(), queue: items.map(entry => entry.playlistPanelVideoRenderer.videoId), likes }),
     buffer: value => { update(); buffered = !value; }, ignore: types => { ignored.clear(); types.forEach(type => ignored.add(type)); },
-    loadDelay: value => { loadDelay = value; }, queue, player };
+    loadDelay: value => { loadDelay = value; },
+    pausedCurrentData: value => { pausedCurrentData = value; },
+    controlDelay: value => { controlDelay = value; }, pauseDelay: value => { pauseDelay = value; },
+    startDelay: value => { startDelay = value; if (!value && startTimer) { clearTimeout(startTimer); startTimer = null; update(); buffered = true; } },
+    queue, player };
   render();
 })();
 </script></html>

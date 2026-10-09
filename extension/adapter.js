@@ -12,6 +12,7 @@
   let remoteVersion = 0;
   let gesture = 0;
   const interactions = new WeakMap();
+  let pendingInteraction = null;
   const observedPlayers = new WeakSet();
   const keys = new Map();
   const node = tag => /** @type {any} */ (document.querySelector(tag));
@@ -72,7 +73,10 @@
       supported: true, videoId, queue: tracks, index, duration: Number.isFinite(duration) ? duration : 0,
       position: Number.isFinite(position) ? position : 0, paused: state !== 1 && state !== 3, ended: state === 0,
       buffering: state === 3 || state === -1,
-      ready: !autoplayBlocked && !!tracks.length && videoId === tracks[index]?.videoId && duration > 0 && state !== 3 && state !== -1 && (!video || video.readyState >= 3),
+      // A paused player can resume with its current frame available. Requiring
+      // future data while paused can prevent the Play command needed to load it.
+      ready: !autoplayBlocked && !!tracks.length && videoId === tracks[index]?.videoId && duration > 0 && state !== 3 && state !== -1 &&
+        (!video || video.readyState >= (state === 2 || state === 5 ? 2 : 3)),
       autoplayBlocked,
       repeat: queueState.repeatMode || 'NONE', shuffle: !!queueState.shuffleEnabled,
       at: Date.now(), userInitiated: Date.now() - lastInteraction < 1800,
@@ -81,6 +85,17 @@
   function poll() {
     try {
       const state = snapshot();
+      const pending = pendingInteraction;
+      if (pending && (pending.version !== remoteVersion || Date.now() - lastInteraction >= 1800)) pendingInteraction = null;
+      else if (pending?.before?.supported && state.supported && !pending.before.paused && state.paused && !state.buffering &&
+        !state.ended && !state.autoplayBlocked && state.videoId === pending.before.videoId &&
+        JSON.stringify(state.queue.map(t => [t.key, t.videoId])) === JSON.stringify(pending.before.queue.map(t => [t.key, t.videoId]))) {
+        // Native UI handlers may finish after the gesture's immediate snapshot.
+        // Preserve a deliberate late Pause even while a startup command waits.
+        send({ kind: 'intent', state, previous: pending.before, changes: ['playback'] });
+        pendingInteraction = null;
+        previous = state;
+      }
       const changes = difference(previous, state);
       send({ kind: 'snapshot', state, previous, changes, applying: applying || Date.now() < suppressedUntil });
       previous = state;
@@ -108,6 +123,7 @@
   }
   let generation = 0;
   async function apply(state, expectedGeneration) {
+    const commandDeadline = Date.now() + 12000;
     const check = () => { if (generation !== expectedGeneration) throw new Error('Playback update cancelled by a safety pause.'); };
     check();
     if (!state || !Array.isArray(state.queue) || state.queue.length < 1 || state.queue.length > MAX_QUEUE ||
@@ -134,7 +150,7 @@
       if (current.repeat !== state.repeat) queue.store.dispatch({ type: 'SET_REPEAT', payload: state.repeat });
       if (current.shuffle !== state.shuffle) queue.store.dispatch({ type: 'SET_SHUFFLE_ENABLED', payload: !!state.shuffle });
       if (songChanged) {
-        const deadline = Date.now() + 12000;
+        const deadline = commandDeadline;
         while (Date.now() < deadline && (player.getVideoData()?.video_id || player.getVideoData()?.videoId) !== state.videoId) {
           await new Promise(resolve => setTimeout(resolve, 100));
           check();
@@ -152,14 +168,23 @@
       check();
       const target = Math.min(state.duration, Math.max(0, state.position));
       if (songChanged || Math.abs(Number(player.getCurrentTime()) - target) > 0.35) player.seekTo(target, true);
-      if (state.paused || !snapshot().ready) player.pauseVideo();
+      if (state.paused) player.pauseVideo();
       else {
         check();
         autoplayBlocked = false;
-        player.playVideo();
-        await new Promise(resolve => setTimeout(resolve, 200));
+        // Repeated Play calls during a seek/queue update can restart native
+        // loading. Wait for this one startup to finish before acknowledging it.
+        if (player.getPlayerState() !== 1 && player.getPlayerState() !== 3) player.playVideo();
+        const startDeadline = Math.min(commandDeadline, Date.now() + 5000);
+        const started = () => { const actual = snapshot(); return actual.ready && !actual.paused && !actual.buffering; };
+        while (!started() && Date.now() < startDeadline) {
+          if (autoplayBlocked) throw new Error('YouTube Music needs a click to play. Press its Play button to resume your session.');
+          await new Promise(resolve => setTimeout(resolve, 100));
+          check();
+        }
         check();
         if (autoplayBlocked) throw new Error('YouTube Music needs a click to play. Press its Play button to resume your session.');
+        if (!started()) throw new Error('YouTube Music is still loading playback. Let the song load, then press its Play button to retry.');
       }
       suppressedUntil = Date.now() + 900;
       previous = snapshot();
@@ -174,12 +199,12 @@
       try { send({ kind: 'reply', id: message.id, state: snapshot() }); }
       catch (error) { send({ kind: 'reply', id: message.id, error: error.message }); }
     }
-    if (message.kind === 'pause') { generation++; access().player?.pauseVideo?.(); suppressedUntil = Date.now() + 900; return; }
+    if (message.kind === 'pause') { generation++; remoteVersion++; pendingInteraction = null; access().player?.pauseVideo?.(); suppressedUntil = Date.now() + 900; return; }
     if (message.kind === 'apply') {
       const expectedGeneration = generation;
       applyChain = applyChain.catch(() => {}).then(async () => {
         try { send({ kind: 'reply', id: message.id, state: await apply(message.state, expectedGeneration) }); }
-        catch (error) { access().player?.pauseVideo?.(); send({ kind: 'reply', id: message.id, error: error.message }); }
+        catch (error) { remoteVersion++; pendingInteraction = null; access().player?.pauseVideo?.(); send({ kind: 'reply', id: message.id, error: error.message }); }
       });
     }
   });
@@ -188,6 +213,7 @@
       let before; try { before = snapshot(); } catch {}
       const interaction = { before, version: remoteVersion, gesture: ++gesture, emitted: false };
       interactions.set(event, interaction);
+      pendingInteraction = interaction;
       lastInteraction = Date.now();
       autoplayBlocked = false;
       // A deliberate native action must not be discarded as feedback from a recent remote update.
@@ -196,7 +222,10 @@
         if (interaction.emitted || interaction.version !== remoteVersion || interaction.gesture !== gesture) return;
         try {
           const state = snapshot(); const changes = difference(before, state);
-          if (changes.length) { send({ kind: 'intent', state, previous: before, changes }); previous = state; }
+          if (changes.length) {
+            send({ kind: 'intent', state, previous: before, changes }); previous = state;
+            if (pendingInteraction === interaction) pendingInteraction = null;
+          }
         } catch {}
         poll();
       }, 0);
@@ -212,6 +241,7 @@
       const state = snapshot(); const changes = difference(interaction.before, state);
       if (changes.length) {
         interaction.emitted = true;
+        if (pendingInteraction === interaction) pendingInteraction = null;
         send({ kind: 'intent', state, previous: interaction.before, changes });
         previous = state;
         poll();

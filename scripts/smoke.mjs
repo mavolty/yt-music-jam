@@ -159,8 +159,41 @@ try {
     const [a, b] = await Promise.all([native(first), native(second)]);
     return a.paused && b.paused && Math.abs(a.position - pausedSeek) < 0.8 && Math.abs(b.position - pausedSeek) < 0.8;
   }, 'guest seek reaches requested paused position');
+  for (const participant of [first, second]) await participant.page.evaluate(() => { window.fixture.startDelay(900); window.fixture.controlDelay(650); window.fixture.pausedCurrentData(true); });
   await first.page.locator('#play').click();
   await until(async () => !(await native(first)).paused && !(await native(second)).paused, 'host resume');
+  await until(async () => {
+    const [a, b] = await Promise.all([native(first), native(second)]);
+    return !a.paused && !b.paused && a.buffered && b.buffered;
+  }, 'buffered resume settles into playing');
+  const stableStart = await Promise.all([native(first), native(second)]);
+  await delay(4000);
+  for (const [index, participant] of [first, second].entries()) {
+    const current = await native(participant);
+    assert(!current.paused && current.buffered && current.position >= stableStart[index].position + 3,
+      'buffered playback must keep progressing without a play/pause feedback loop');
+    assert.equal(current.pauseCalls, stableStart[index].pauseCalls, 'stable playback must not issue more pause commands');
+  }
+  report('Paused current-frame data and 900 ms startup buffering settle without play/pause loops');
+  await first.page.locator('#play').click();
+  await until(async () => (await native(first)).paused && (await native(second)).paused, 'pause before startup-cancel regression');
+  await first.page.locator('#play').click();
+  await until(async () => { const state = await native(second); return !state.paused && !state.buffered; }, 'partner starting buffered playback');
+  await second.page.evaluate(() => window.fixture.pauseDelay(350));
+  await second.page.locator('#play').click();
+  await until(async () => (await native(first)).paused && (await native(second)).paused, 'explicit user pause cancels startup');
+  await delay(1500);
+  assert((await native(first)).paused && (await native(second)).paused, 'cancelled startup must not resume after a user pause');
+  report('Asynchronous native Pause during pending startup cancels playback for both participants');
+  await second.page.evaluate(() => window.fixture.pauseDelay(0));
+  await second.page.evaluate(() => window.fixture.startDelay(60000));
+  await first.page.locator('#play').click();
+  await until(async () => (await second.request({ type: 'status' })).value.error?.includes('still loading playback'), 'bounded startup timeout', 15000);
+  await until(async () => (await native(first)).paused && (await native(second)).paused, 'startup timeout holds both players');
+  for (const participant of [first, second]) await participant.page.evaluate(() => { window.fixture.startDelay(0); window.fixture.controlDelay(0); window.fixture.pausedCurrentData(false); });
+  await second.page.locator('#play').click();
+  await until(async () => !(await native(first)).paused && !(await native(second)).paused, 'one native play click retries timed-out startup');
+  report('Unfinished startup times out visibly, pauses both, and recovers on a native Play click');
   const playingSeek = (await native(second)).position + 10;
   await second.page.locator('#seek').click();
   await until(async () => (await native(first)).position >= playingSeek - 0.8 && (await native(second)).position >= playingSeek - 0.8, 'guest seek advances both by ten seconds');
