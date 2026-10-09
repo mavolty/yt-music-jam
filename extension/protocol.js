@@ -15,13 +15,20 @@ export function validQueue(queue, allowEmpty = false) {
     new Set(queue.map(item => item.key)).size === queue.length;
 }
 
-export function validState(state) {
+export function validCommand(state) {
   return !!state && ID.test(state.videoId) && Number.isFinite(state.position) && state.position >= 0 &&
-    Number.isFinite(state.duration) && state.duration > 0 && state.duration <= 604800 &&
+    Number.isFinite(state.duration) && state.duration >= 0 && state.duration <= 604800 &&
     typeof state.paused === 'boolean' && typeof state.ready === 'boolean' &&
+    (!state.ready || state.duration > 0) &&
     Number.isInteger(state.index) && validQueue(state.queue) && state.index >= 0 && state.index < state.queue.length &&
     state.queue[state.index].videoId === state.videoId &&
     ['NONE', 'ONE', 'ALL'].includes(state.repeat) && typeof state.shuffle === 'boolean';
+}
+
+export function validState(state) {
+  // A canonical loading snapshot can have no duration yet. It must stay paused
+  // until a matching native player has loaded the selected song.
+  return validCommand(state) && (state.duration > 0 || (state.paused && !state.ready));
 }
 
 export function queueSignature(queue) {

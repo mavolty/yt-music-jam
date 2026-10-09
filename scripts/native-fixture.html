@@ -2,13 +2,15 @@
 <style>body{background:#111;color:#eee;font:16px system-ui;padding:30px}button{margin:5px;padding:10px}#queue{line-height:2}</style>
 <h1>Native player interface fixture</h1><p>This exercises the real extension and relay, using a simulated native page.</p>
 <ytmusic-player></ytmusic-player><ytmusic-player-bar></ytmusic-player-bar><ytmusic-player-queue></ytmusic-player-queue>
-<div><button id="play">Play / pause</button><button id="seek">Seek +10s</button><button id="next">Next song</button><button id="add-c">Add C</button><button id="add-d">Add D</button><button id="remove">Remove last</button><button id="reorder">Move last to next</button><button id="replace">Play another playlist</button><button id="like">Like locally</button></div><ol id="queue"></ol>
+<div><button id="play" class="play-pause-button">Play / pause</button><button id="seek">Seek +10s</button><button id="next">Next song</button><button id="play-next">Select and play next asynchronously</button><button id="add-c">Add C</button><button id="add-d">Add D</button><button id="remove">Remove last</button><button id="reorder">Move last to next</button><button id="replace">Play another playlist</button><button id="like">Like locally</button></div><ol id="queue"></ol>
 <script>
 (() => {
   let paused = false, buffered = true, position = 20, at = Date.now(), likes = 0;
-  let items = [], currentId = 'AAAAAAAAAAA', nextId = 0, loadDelay = 0;
+  let items = [], currentId = 'AAAAAAAAAAA', nextId = 0, loadDelay = 0, loadTimer, metadataDelay = 0, metadataTimer;
   const ignored = new Set();
-  let startDelay = 0, startTimer, controlDelay = 0, controlTimer, pauseDelay = 0, pausedCurrentData = false, playCalls = 0, pauseCalls = 0;
+  const selections = [];
+  let deferredPause = false, pendingPause = null;
+  let startDelay = 0, startTimer, controlDelay = 0, controlTimer, pauseDelay = 0, pausedCurrentData = false, zeroDurationDuringStart = false, playCalls = 0, pauseCalls = 0;
   const modes = { repeatMode: 'NONE', shuffleEnabled: false };
   const item = (id, selected = false) => ({ playlistPanelVideoRenderer: { videoId: id, title: { simpleText: `Track ${id[0]}` }, longBylineText: { simpleText: 'Fixture artist' }, lengthText: { simpleText: '4:00' }, selected, navigationEndpoint: { watchEndpoint: { videoId: id, index: nextId++, watchEndpointMusicSupportedConfigs: { watchEndpointMusicConfig: { musicVideoType: 'MUSIC_VIDEO_TYPE_ATV' } } } } } });
   items = [item('AAAAAAAAAAA', true), item('BBBBBBBBBBB')];
@@ -16,21 +18,27 @@
   const update = () => { position = time(); at = Date.now(); };
   const render = () => { document.querySelector('#queue').innerHTML = items.map(entry => `<li>${entry.playlistPanelVideoRenderer.selected ? '▶ ' : ''}${entry.playlistPanelVideoRenderer.title.simpleText}</li>`).join(''); };
   const select = index => {
+    clearTimeout(loadTimer);
     items = items.map((entry, i) => ({ playlistPanelVideoRenderer: { ...entry.playlistPanelVideoRenderer, selected: i === index } }));
     const id = items[index]?.playlistPanelVideoRenderer.videoId;
+    if (id) { selections.push(id); if (selections.length > 100) selections.shift(); }
     if (id && id !== currentId) {
-      const load = () => { currentId = id; position = 0; at = Date.now(); };
-      if (loadDelay) setTimeout(load, loadDelay); else load();
+      const load = () => {
+        currentId = id; position = 0; at = Date.now(); clearTimeout(metadataTimer);
+        if (metadataDelay) metadataTimer = setTimeout(() => { metadataTimer = null; }, metadataDelay);
+      };
+      if (loadDelay) loadTimer = setTimeout(load, loadDelay); else load();
     }
     render();
   };
   const media = document.createElement('video');
   Object.defineProperty(media, 'readyState', { get: () => pausedCurrentData && paused ? 2 : buffered ? 4 : startTimer ? 2 : 1 });
-  Object.defineProperty(media, 'duration', { get: () => 240 });
+  const duration = () => (zeroDurationDuringStart && startTimer) || metadataTimer ? 0 : 240;
+  Object.defineProperty(media, 'duration', { get: duration });
   Object.defineProperty(media, 'currentTime', { get: time });
   document.body.appendChild(media);
   const player = { getVideoData: () => ({ video_id: currentId }), getPlayerState: () => paused ? 2 : !buffered ? 3 : 1,
-    getDuration: () => 240, getCurrentTime: time, pauseVideo: () => { clearTimeout(controlTimer); update(); paused = true; pauseCalls++; },
+    getDuration: duration, getCurrentTime: time, pauseVideo: () => { clearTimeout(controlTimer); update(); paused = true; pauseCalls++; },
     playVideo: () => {
       const wasPaused = paused;
       playCalls++;
@@ -64,18 +72,24 @@
   document.querySelector('ytmusic-player-queue').polymerController = { queue };
   document.querySelector('ytmusic-player').polymerController = { playerApi: player };
   document.querySelector('ytmusic-player-bar').polymerController = { playerApi: player, queue };
-  document.querySelector('#play').onclick = () => paused ? player.playVideo() : pauseDelay ? setTimeout(() => player.pauseVideo(), pauseDelay) : player.pauseVideo();
+  document.querySelector('#play').onclick = () => paused ? player.playVideo() : deferredPause ? pendingPause = () => player.pauseVideo() : pauseDelay ? setTimeout(() => player.pauseVideo(), pauseDelay) : player.pauseVideo();
   document.querySelector('#seek').onclick = () => player.seekTo(time() + 10);
   document.querySelector('#next').onclick = () => select((queue.getCurrentItemIndex() + 1) % items.length);
+  document.querySelector('#play-next').onclick = () => { select((queue.getCurrentItemIndex() + 1) % items.length); setTimeout(() => player.playVideo(), 650); };
   for (const [button, id] of [['add-c', 'CCCCCCCCCCC'], ['add-d', 'DDDDDDDDDDD']]) document.querySelector(`#${button}`).onclick = () => { items.push(item(id)); render(); };
   document.querySelector('#remove').onclick = () => { if (items.length > 1) items.pop(); render(); };
   document.querySelector('#reorder').onclick = () => { if (items.length > 2) items.splice(1, 0, items.pop()); render(); };
   document.querySelector('#replace').onclick = () => { items = [item('EEEEEEEEEEE', true), item('FFFFFFFFFFF')]; select(0); };
   document.querySelector('#like').onclick = () => likes++;
-  window.fixture = { snapshot: () => ({ videoId: currentId, paused, buffered, playCalls, pauseCalls, position: time(), queue: items.map(entry => entry.playlistPanelVideoRenderer.videoId), likes }),
+  window.fixture = { snapshot: () => ({ videoId: currentId, selectedVideoId: items[queue.getCurrentItemIndex()]?.playlistPanelVideoRenderer.videoId, paused, buffered, playCalls, pauseCalls, position: time(), queue: items.map(entry => entry.playlistPanelVideoRenderer.videoId), likes }),
+    selections: () => [...selections], clearSelections: () => { selections.length = 0; },
+    deferPause: value => { deferredPause = value; }, pausePending: () => !!pendingPause,
+    releasePause: () => { const callback = pendingPause; pendingPause = null; callback?.(); },
     buffer: value => { update(); buffered = !value; }, ignore: types => { ignored.clear(); types.forEach(type => ignored.add(type)); },
     loadDelay: value => { loadDelay = value; },
+    metadataDelay: value => { metadataDelay = value; },
     pausedCurrentData: value => { pausedCurrentData = value; },
+    zeroDurationDuringStart: value => { zeroDurationDuringStart = value; },
     controlDelay: value => { controlDelay = value; }, pauseDelay: value => { pauseDelay = value; },
     startDelay: value => { startDelay = value; if (!value && startTimer) { clearTimeout(startTimer); startTimer = null; update(); buffered = true; } },
     queue, player };

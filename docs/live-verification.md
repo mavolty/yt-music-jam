@@ -4,6 +4,7 @@ This is the remaining acceptance check. Fixture smoke checks cannot establish re
 
 ## Start
 
+- With Music Together disabled and the YouTube Music tab reloaded, verify that normal playback works. If it fails, compare playback of a fresh song from search in a Chrome Guest window without extensions before diagnosing synchronization. Do not rely on the old saved queue, share Google credentials or erase browser data for this check.
 - Install the same extension package on both laptops and reload YouTube Music.
 - Each person remains signed into their own Premium account.
 - Open Up next on both. Choose an ordinary available song and a short queue on the creator's tab.
@@ -13,6 +14,7 @@ This is the remaining acceptance check. Fixture smoke checks cannot establish re
 ## Native controls
 
 - From each laptop, pause/resume, seek within the current song, select another queued song, and choose a song from search.
+- On 0.1.3, select a new song while paused and while playing. Loading must retain the selected song; a click that starts the new song must retain its delayed Play. Click Like during remote startup and confirm it does not restart playback.
 - Add songs through the ordinary YouTube Music menu, remove a queued song, and drag a song to reorder it from either laptop.
 - Add a song on both laptops at nearly the same time; both additions should remain in the same order on both queues.
 - Start a different playlist, exercise shuffle and repeat, and let a radio queue grow. Confirm the native queue and selected track remain aligned.

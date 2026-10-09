@@ -118,7 +118,9 @@ try {
         const m = event.detail;
         if (m.kind === 'apply' || m.kind === 'intent' || (m.kind === 'snapshot' && m.changes?.length)) {
           window.fixtureTrace.push({ at: Date.now(), direction: name, kind: m.kind, changes: m.changes, applying: m.applying,
-            before: m.previous?.queue?.map(t => t.videoId), after: m.state?.queue?.map(t => t.videoId) });
+            before: m.previous?.queue?.map(t => t.videoId), after: m.state?.queue?.map(t => t.videoId),
+            videoId: m.state?.videoId, index: m.state?.index, paused: m.state?.paused, buffering: m.state?.buffering,
+            ready: m.state?.ready, duration: m.state?.duration, userInitiated: m.state?.userInitiated });
           if (window.fixtureTrace.length > 80) window.fixtureTrace.shift();
         }
       });
@@ -159,22 +161,38 @@ try {
     const [a, b] = await Promise.all([native(first), native(second)]);
     return a.paused && b.paused && Math.abs(a.position - pausedSeek) < 0.8 && Math.abs(b.position - pausedSeek) < 0.8;
   }, 'guest seek reaches requested paused position');
+  if (process.argv.includes('--reproduce-phased-selection')) {
+    await second.page.locator('#play-next').click();
+    await until(async () => !(await native(first)).paused && !(await native(second)).paused, 'phased selection retains delayed Play');
+    await first.page.locator('#play').click();
+    await until(async () => (await native(first)).paused && (await native(second)).paused, 'pause after phased selection');
+  }
   for (const participant of [first, second]) await participant.page.evaluate(() => { window.fixture.startDelay(900); window.fixture.controlDelay(650); window.fixture.pausedCurrentData(true); });
+  await first.page.evaluate(() => window.fixture.zeroDurationDuringStart(true));
+  const beforeRemotePlay = await native(second);
   await first.page.locator('#play').click();
+  if (process.argv.includes('--reproduce-local-click')) {
+    await until(async () => { const state = await native(second); return state.playCalls > beforeRemotePlay.playCalls && state.paused; }, 'remote Play before native transition');
+    const beforeLike = await native(second);
+    await second.page.locator('#like').click();
+    await until(async () => (await second.request({ type: 'status' })).value.phase === 'playing' && (await native(second)).buffered, 'remote startup after unrelated local click');
+    assert.equal((await native(second)).pauseCalls, beforeLike.pauseCalls, 'a local Like must not cancel and restart remote Play');
+  }
   await until(async () => !(await native(first)).paused && !(await native(second)).paused, 'host resume');
   await until(async () => {
     const [a, b] = await Promise.all([native(first), native(second)]);
-    return !a.paused && !b.paused && a.buffered && b.buffered;
+    return !a.paused && !b.paused && a.buffered && b.buffered && Math.abs(a.position - b.position) < 0.8 &&
+      (await first.request({ type: 'status' })).value.phase === 'playing' && (await second.request({ type: 'status' })).value.phase === 'playing';
   }, 'buffered resume settles into playing');
   const stableStart = await Promise.all([native(first), native(second)]);
   await delay(4000);
   for (const [index, participant] of [first, second].entries()) {
     const current = await native(participant);
     assert(!current.paused && current.buffered && current.position >= stableStart[index].position + 3,
-      'buffered playback must keep progressing without a play/pause feedback loop');
+      `buffered playback must keep progressing without a play/pause feedback loop (position ${stableStart[index].position} -> ${current.position})`);
     assert.equal(current.pauseCalls, stableStart[index].pauseCalls, 'stable playback must not issue more pause commands');
   }
-  report('Paused current-frame data and 900 ms startup buffering settle without play/pause loops');
+  report('Delayed native Play, missing duration and 900 ms startup buffering settle without play/pause loops');
   await first.page.locator('#play').click();
   await until(async () => (await native(first)).paused && (await native(second)).paused, 'pause before startup-cancel regression');
   await first.page.locator('#play').click();
@@ -198,6 +216,100 @@ try {
   await second.page.locator('#seek').click();
   await until(async () => (await native(first)).position >= playingSeek - 0.8 && (await native(second)).position >= playingSeek - 0.8, 'guest seek advances both by ten seconds');
   await together('guest seek');
+  for (const [participant, role, paused] of [[second, 'guest', false], [first, 'host', true], [second, 'guest', true], [first, 'host', false]]) {
+    if ((await native(first)).paused !== paused) {
+      await first.page.locator('#play').click();
+      await until(async () => (await native(first)).paused === paused && (await native(second)).paused === paused, `prepare ${role} selection`);
+    }
+    const target = (await native(participant)).videoId === 'AAAAAAAAAAA' ? 'BBBBBBBBBBB' : 'AAAAAAAAAAA';
+    await participant.page.evaluate(() => { window.fixture.loadDelay(2500); window.fixture.metadataDelay(1200); window.fixture.clearSelections(); });
+    await participant.page.locator('#next').click();
+    await until(async () => (await native(first)).videoId === target && (await native(second)).videoId === target, `${role} selection survives queue-before-player loading`);
+    await until(async () => (await native(first)).paused === paused && (await native(second)).paused === paused, `${role} selection settles after late metadata`);
+    await delay(1500);
+    for (const browser of [first, second]) {
+      const current = await native(browser);
+      assert.equal(current.videoId, target);
+      assert.equal(current.selectedVideoId, target);
+      assert.equal(current.paused, paused);
+    }
+    const selections = await participant.page.evaluate(() => window.fixture.selections());
+    assert(selections.length && selections.every(id => id === target), 'an older snapshot must not select the previous song during native loading');
+    await participant.page.evaluate(() => { window.fixture.loadDelay(0); window.fixture.metadataDelay(0); });
+  }
+  report('Both roles retain paused and playing song selections through staged native queue/player loading');
+  for (const [participant, role] of [[first, 'host'], [second, 'guest']]) {
+    await first.page.locator('#play').click();
+    await until(async () => (await native(first)).paused && (await native(second)).paused, `pause before phased ${role} selection`);
+    const previousId = (await native(participant)).videoId;
+    await participant.page.locator('#play-next').click();
+    await until(async () => {
+      const [a, b] = await Promise.all([native(first), native(second)]);
+      return a.videoId !== previousId && a.videoId === b.videoId && !a.paused && !b.paused;
+    }, `phased ${role} selection retains delayed Play`);
+    await together(`phased ${role} selection synchronization`);
+  }
+  report('Native song clicks retain their delayed Play from either participant');
+  await first.page.locator('#play').click();
+  await until(async () => (await native(first)).paused && (await native(second)).paused, 'pause before local-click startup check');
+  await second.page.evaluate(() => { window.fixture.controlDelay(650); window.fixture.startDelay(0); });
+  const beforeLikeStartup = await native(second);
+  await first.page.locator('#play').click();
+  await until(async () => { const state = await native(second); return state.playCalls > beforeLikeStartup.playCalls && state.paused; }, 'remote Play still awaiting native state');
+  const likeAt = Date.now();
+  await second.page.locator('#like').click();
+  await until(async () => (await second.request({ type: 'status' })).value.phase === 'playing' && !(await native(second)).paused, 'local click allows remote startup to finish');
+  await delay(1500);
+  const reflectedIntents = await second.page.evaluate(since => window.fixtureTrace.filter(item => item.at >= since && item.kind === 'intent' && item.changes?.includes('playback')), likeAt);
+  assert.equal(reflectedIntents.length, 0, 'Like must not emit the remote Play as a new native intent after acknowledgement');
+  await second.page.evaluate(() => window.fixture.controlDelay(0));
+  report('A local Like during remote startup does not create a reflected playback command');
+  await first.page.locator('#play').click();
+  await until(async () => (await native(first)).paused && (await native(second)).paused, 'pause before keyboard activation');
+  await second.page.locator('#play').focus();
+  const keyboardAt = Date.now();
+  await second.page.keyboard.down('Space');
+  await second.page.keyboard.down('Space');
+  await delay(200);
+  await second.page.keyboard.up('Space');
+  await until(async () => (await first.request({ type: 'status' })).value.phase === 'playing' && (await second.request({ type: 'status' })).value.phase === 'playing', 'Space activates the focused Play button once');
+  await delay(1000);
+  const keyboardIntents = await second.page.evaluate(since => window.fixtureTrace.filter(item => item.at >= since && item.kind === 'intent' && item.changes?.includes('playback')), keyboardAt);
+  assert.equal(keyboardIntents.length, 1, 'held Space must emit one native activation command, without keydown/click duplication');
+  assert(!(await native(first)).paused && !(await native(second)).paused);
+  report('Holding Space on the native Play button produces one shared playback request');
+  await first.page.evaluate(() => window.fixture.deferPause(true));
+  await first.page.locator('#play').click();
+  await until(async () => (await native(first)).paused && (await native(second)).paused, 'captured Pause precedes its delayed native callback');
+  await second.page.locator('#play').click();
+  await until(async () => (await first.request({ type: 'status' })).value.phase === 'playing' && (await second.request({ type: 'status' })).value.phase === 'playing', 'newer partner Play accepted');
+  const stalePauseLikeAt = Date.now();
+  await first.page.locator('#like').click();
+  assert(await first.page.evaluate(() => window.fixture.pausePending()), 'the old native Pause callback must still be outstanding after newer Play');
+  await first.page.evaluate(() => window.fixture.releasePause());
+  await delay(1500);
+  await until(async () => !(await native(first)).paused && !(await native(second)).paused, 'older native Pause cannot replace newer partner Play');
+  const stalePauseIntents = await first.page.evaluate(since => window.fixtureTrace.filter(item => item.at >= since && item.kind === 'intent' && item.changes?.includes('playback')), stalePauseLikeAt);
+  assert.equal(stalePauseIntents.length, 0, 'Like must not turn the older native Pause callback into another shared command');
+  await first.page.evaluate(() => window.fixture.deferPause(false));
+  report('A delayed older Pause plus Like cannot override a newer partner Play');
+  await first.page.locator('#play').click();
+  await until(async () => (await native(first)).paused && (await native(second)).paused, 'pause before directional media key check');
+  await second.page.evaluate(() => window.fixture.controlDelay(650));
+  const beforeMediaPause = await native(second);
+  await first.page.locator('#play').click();
+  await until(async () => { const state = await native(second); return state.playCalls > beforeMediaPause.playCalls && state.paused; }, 'native startup still reports paused');
+  const mediaInput = await second.context.newCDPSession(second.page);
+  await mediaInput.send('Input.dispatchKeyEvent', { type: 'keyDown', code: 'MediaPause', key: 'MediaPause' });
+  await mediaInput.send('Input.dispatchKeyEvent', { type: 'keyUp', code: 'MediaPause', key: 'MediaPause' });
+  await mediaInput.detach();
+  await until(async () => (await native(first)).paused && (await native(second)).paused, 'MediaPause cancels unstarted Play');
+  await delay(1000);
+  assert((await native(first)).paused && (await native(second)).paused);
+  await second.page.evaluate(() => window.fixture.controlDelay(0));
+  await second.page.locator('#play').click();
+  await until(async () => (await first.request({ type: 'status' })).value.phase === 'playing' && (await second.request({ type: 'status' })).value.phase === 'playing', 'resume after directional Pause');
+  report('MediaPause cancels pending Play even while native state still reports paused');
   await first.page.locator('#next').click();
   await together('host song selection');
   report('Bidirectional native play/pause, seek and song selection');
@@ -217,9 +329,11 @@ try {
   await until(async () => (await native(first)).videoId === 'EEEEEEEEEEE', 'guest playlist replacement');
   await together('playlist replacement');
   report('Native queue add/remove/reorder, simultaneous additions and playlist replacement');
+  const previousLikes = (await native(second)).likes;
+  const previousHostLikes = (await native(first)).likes;
   await second.page.locator('#like').click();
   await delay(700);
-  assert.equal((await native(first)).likes, 0); assert.equal((await native(second)).likes, 1);
+  assert.equal((await native(first)).likes, previousHostLikes); assert.equal((await native(second)).likes, previousLikes + 1);
   report('Personal library actions stay local');
   await second.page.evaluate(() => window.fixture.buffer(true));
   await until(async () => (await native(first)).paused && (await native(second)).paused, 'buffering pauses both');
@@ -236,6 +350,22 @@ try {
   }, 'both participants reconnected and playing', 20000);
   await together('reconnection');
   report('Network interruption pauses and reconciles the session');
+  await first.page.locator('#play').click();
+  await until(async () => (await native(first)).paused && (await native(second)).paused, 'pause before delayed native handler disconnect');
+  await second.page.locator('#play-next').click();
+  await delay(200);
+  // The transport is declared offline while navigator.onLine remains true,
+  // exercising a relay interruption rather than relying on browser readiness.
+  await second.page.evaluate(() => window.dispatchEvent(new Event('offline')));
+  await until(async () => !(await second.request({ type: 'status' })).value.peerOnline, 'phased native click loses its transport');
+  await delay(1500);
+  assert((await native(first)).paused && (await native(second)).paused, 'a delayed native handler must not leave music playing after transport loss');
+  await second.page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await until(async () => (await first.request({ type: 'status' })).value.peerOnline && (await second.request({ type: 'status' })).value.peerOnline, 'transport restored after delayed native handler', 20000);
+  await second.page.locator('#play').click();
+  await until(async () => (await first.request({ type: 'status' })).value.phase === 'playing' && (await second.request({ type: 'status' })).value.phase === 'playing', 'explicit Play after phased handler disconnect', 20000);
+  await together('phased handler disconnect recovery');
+  report('Delayed native Play after transport loss is paused and recovers on an explicit retry');
   for (const participant of [second, first]) {
     await participant.page.reload();
     await until(async () => {

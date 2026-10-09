@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube Music Together",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Listen together through your own YouTube Music tabs. Private sessions for two.",
   "minimum_chrome_version": "116",
   "permissions": ["storage"],

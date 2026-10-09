@@ -1,6 +1,6 @@
 {
   "name": "yt-music-together",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "Private synchronization for two native YouTube Music browser tabs",

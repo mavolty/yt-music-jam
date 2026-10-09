@@ -5,6 +5,7 @@
   let channel = '';
   let previous = null;
   let applying = false;
+  let activeCommand = null;
   let lastInteraction = 0;
   let suppressedUntil = 0;
   let applyChain = Promise.resolve();
@@ -23,13 +24,40 @@
   function difference(before, after) {
     const changes = [];
     if (!before?.supported || !after?.supported) return changes;
-    if (after.videoId !== before.videoId || after.queue[after.index]?.key !== before.queue[before.index]?.key) changes.push('song');
+    if (after.queue[after.index]?.key !== before.queue[before.index]?.key) changes.push('song');
     if (after.paused !== before.paused) changes.push('playback');
     if (JSON.stringify(after.queue.map(t => [t.key, t.videoId])) !== JSON.stringify(before.queue.map(t => [t.key, t.videoId]))) changes.push('queue');
     if (after.repeat !== before.repeat || after.shuffle !== before.shuffle) changes.push('modes');
     const predicted = before.position + (before.paused ? 0 : (after.at - before.at) / 1000);
     if (after.videoId === before.videoId && Math.abs(after.position - predicted) > 1.2) changes.push('seek');
     return changes;
+  }
+  function emitInteraction(interaction, state, immediate = false) {
+    let changes = difference(interaction.before, state);
+    if (interaction.followupSelection) changes = changes.filter(change => ['playback', 'modes'].includes(change));
+    if (!immediate && !interaction.deferredPlayback && !interaction.followupSelection && !changes.includes('song')) changes = changes.filter(change => change !== 'playback');
+    // A local click such as Like can occur while remote Play is still starting.
+    // Its eventual playback transition belongs to that command, not the click.
+    if (applying && activeCommand && state.paused === activeCommand.paused) changes = changes.filter(change => change !== 'playback');
+    if (!changes.length || state.ended || state.autoplayBlocked) return false;
+    const selected = state.queue[state.index];
+    if (!selected) return false;
+    const selectedLoaded = state.videoId === selected.videoId;
+    // Selection is a command even while the player still reports the old song.
+    // Never attach that old song's duration or position to the new selection.
+    const command = { ...state, videoId: selected.videoId,
+      duration: selectedLoaded ? state.duration : 0,
+      position: changes.includes('song') ? 0 : state.position,
+      ready: selectedLoaded && state.ready, userInitiated: true };
+    interaction.emitted = true;
+    send({ kind: 'intent', state: command, previous: interaction.before, changes });
+    if (changes.some(change => change === 'song' || change === 'queue') || interaction.followupSelection) {
+      interaction.followupSelection = selected.key;
+      interaction.before = state;
+      pendingInteraction = interaction;
+    } else if (pendingInteraction === interaction) pendingInteraction = null;
+    previous = state;
+    return true;
   }
   function access() {
     const queue = controller(node('ytmusic-player-queue'))?.queue;
@@ -86,16 +114,8 @@
     try {
       const state = snapshot();
       const pending = pendingInteraction;
-      if (pending && (pending.version !== remoteVersion || Date.now() - lastInteraction >= 1800)) pendingInteraction = null;
-      else if (pending?.before?.supported && state.supported && !pending.before.paused && state.paused && !state.buffering &&
-        !state.ended && !state.autoplayBlocked && state.videoId === pending.before.videoId &&
-        JSON.stringify(state.queue.map(t => [t.key, t.videoId])) === JSON.stringify(pending.before.queue.map(t => [t.key, t.videoId]))) {
-        // Native UI handlers may finish after the gesture's immediate snapshot.
-        // Preserve a deliberate late Pause even while a startup command waits.
-        send({ kind: 'intent', state, previous: pending.before, changes: ['playback'] });
-        pendingInteraction = null;
-        previous = state;
-      }
+      if (pending && (pending.version !== remoteVersion || Date.now() - pending.at >= (pending.followupSelection ? 12000 : 1800))) pendingInteraction = null;
+      else if (pending?.before?.supported && state.supported) emitInteraction(pending, state);
       const changes = difference(previous, state);
       send({ kind: 'snapshot', state, previous, changes, applying: applying || Date.now() < suppressedUntil });
       previous = state;
@@ -132,7 +152,15 @@
     const { queue, player } = access();
     if (!queue?.store?.dispatch || !player?.pauseVideo || !player?.playVideo || !player?.seekTo) throw new Error('YouTube Music playback controls are unavailable.');
     applying = true;
+    activeCommand = state;
     remoteVersion++;
+    if (pendingInteraction?.followupSelection === state.queue[state.index].key && state.paused) {
+      // Native selection can precede its asynchronous Play handler. A matching
+      // loading hold preserves that remaining effect, with remote fields as its
+      // baseline so the hold itself is not emitted back as a user command.
+      pendingInteraction.version = remoteVersion;
+      pendingInteraction.before = { ...state, supported: true };
+    } else pendingInteraction = null;
     try {
       const current = snapshot();
       const queueChanged = JSON.stringify(current.queue?.map(t => [t.key, t.videoId])) !== JSON.stringify(state.queue.map(t => [t.key, t.videoId]));
@@ -189,7 +217,7 @@
       suppressedUntil = Date.now() + 900;
       previous = snapshot();
       return previous;
-    } finally { applying = false; }
+    } finally { applying = false; activeCommand = null; }
   }
   window.addEventListener('ytmt:to-page', event => {
     const message = /** @type {CustomEvent} */ (event).detail;
@@ -199,7 +227,14 @@
       try { send({ kind: 'reply', id: message.id, state: snapshot() }); }
       catch (error) { send({ kind: 'reply', id: message.id, error: error.message }); }
     }
-    if (message.kind === 'pause') { generation++; remoteVersion++; pendingInteraction = null; access().player?.pauseVideo?.(); suppressedUntil = Date.now() + 900; return; }
+    if (message.kind === 'pause') {
+      generation++; remoteVersion++;
+      if (pendingInteraction?.followupSelection && navigator.onLine) {
+        pendingInteraction.version = remoteVersion;
+        pendingInteraction.before = { ...pendingInteraction.before, paused: true, at: Date.now() };
+      } else pendingInteraction = null;
+      access().player?.pauseVideo?.(); suppressedUntil = Date.now() + 900; return;
+    }
     if (message.kind === 'apply') {
       const expectedGeneration = generation;
       applyChain = applyChain.catch(() => {}).then(async () => {
@@ -211,21 +246,45 @@
   for (const type of ['click', 'keydown', 'pointerup']) document.addEventListener(type, event => {
     if (event.isTrusted) {
       let before; try { before = snapshot(); } catch {}
-      const interaction = { before, version: remoteVersion, gesture: ++gesture, emitted: false };
+      const path = event.composedPath();
+      const playbackControl = path.some(element => element instanceof Element &&
+        (['play-pause-button', 'play-pause-button-mweb'].includes(element.id) || element.classList.contains('play-pause-button')));
+      const target = /** @type {HTMLElement} */ (event.target);
+      const keyboard = /** @type {KeyboardEvent} */ (event);
+      const keyboardPlayback = type === 'keydown' && !keyboard.repeat && !keyboard.ctrlKey && !keyboard.altKey && !keyboard.metaKey &&
+        !target?.closest?.('input, textarea, [contenteditable="true"]') &&
+        (keyboard.code !== 'Space' || !target?.closest?.('button, a, [role="button"], yt-icon-button')) &&
+        ['Space', 'KeyK', 'MediaPlayPause', 'MediaPlay', 'MediaPause'].includes(/** @type {KeyboardEvent} */ (event).code);
+      const explicitPlayback = (type === 'click' && playbackControl) || keyboardPlayback;
+      const interaction = { before, version: remoteVersion, gesture: ++gesture, emitted: false, at: Date.now(), deferredPlayback: explicitPlayback };
       interactions.set(event, interaction);
-      pendingInteraction = interaction;
       lastInteraction = Date.now();
       autoplayBlocked = false;
-      // A deliberate native action must not be discarded as feedback from a recent remote update.
-      suppressedUntil = 0;
+      // Explicit intents bypass polling suppression. Unrelated local gestures
+      // must not expose delayed effects from an older native command.
+      const selected = before?.queue?.[before.index];
+      if (explicitPlayback && before?.supported && selected) {
+        const code = /** @type {KeyboardEvent} */ (event).code;
+        const paused = code === 'MediaPause' ? true : code === 'MediaPlay' ? false : !before.paused;
+        if (code === 'MediaPause' || code === 'MediaPlay' || paused !== before.paused) {
+          // Record the request at the trusted control itself. Waiting for an
+          // asynchronous player state can lose Pause across a newer snapshot.
+          const loaded = before.videoId === selected.videoId;
+          send({ kind: 'intent', previous: before, changes: ['playback'], state: {
+            ...before, videoId: selected.videoId, duration: loaded ? before.duration : 0,
+            position: loaded ? before.position : 0, paused, ready: paused && loaded && before.ready,
+            buffering: !paused, ended: false, userInitiated: true, at: Date.now(),
+          } });
+          interaction.emitted = true;
+          pendingInteraction = null;
+          previous = before;
+          suppressedUntil = Date.now() + 1800;
+        }
+      }
       setTimeout(() => {
         if (interaction.emitted || interaction.version !== remoteVersion || interaction.gesture !== gesture) return;
         try {
-          const state = snapshot(); const changes = difference(before, state);
-          if (changes.length) {
-            send({ kind: 'intent', state, previous: before, changes }); previous = state;
-            if (pendingInteraction === interaction) pendingInteraction = null;
-          }
+          emitInteraction(interaction, snapshot());
         } catch {}
         poll();
       }, 0);
@@ -236,16 +295,9 @@
   // available for asynchronous native actions.
   for (const type of ['click', 'keydown', 'pointerup']) document.addEventListener(type, event => {
     const interaction = interactions.get(event);
-    if (!interaction || interaction.version !== remoteVersion) return;
+    if (!interaction || interaction.emitted || interaction.version !== remoteVersion) return;
     try {
-      const state = snapshot(); const changes = difference(interaction.before, state);
-      if (changes.length) {
-        interaction.emitted = true;
-        if (pendingInteraction === interaction) pendingInteraction = null;
-        send({ kind: 'intent', state, previous: interaction.before, changes });
-        previous = state;
-        poll();
-      }
+      if (emitInteraction(interaction, snapshot(), true)) poll();
     } catch {}
   });
   setInterval(poll, 400);
