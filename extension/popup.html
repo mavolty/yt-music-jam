@@ -2,51 +2,53 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>YouTube Music Together</title>
+  <title>YT Music Jam</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <header><div class="mark" aria-hidden="true">♫</div><div><h1>Music, together.</h1><p>Your songs. The same moment.</p></div><span class="tag">FOR TWO</span></header>
-  <main>
-    <div id="error" role="alert" hidden></div>
-    <section id="setup">
-      <p class="intro">Keep listening in YouTube Music. We’ll bring your two players together.</p>
-      <div class="tabs" role="tablist" aria-label="Session setup">
-        <button id="create-tab" role="tab" aria-selected="true" aria-controls="create-panel">Start a session</button>
-        <button id="join-tab" role="tab" aria-selected="false" aria-controls="join-panel">Join your partner</button>
-      </div>
-      <form id="create-panel">
-        <label for="relay">Session server</label>
-        <input id="relay" type="url" placeholder="https://your-relay.workers.dev" required autocomplete="off" spellcheck="false">
-        <p class="hint">Use the server address from our setup guide. Choose a song in YouTube Music first.</p>
-        <button class="primary" type="submit">Create private session <span aria-hidden="true">↗</span></button>
+  <main id="app">
+    <section data-view="idle">
+      <h1>Listen together</h1>
+      <p class="lede">Same song, same second, on both your headphones.</p>
+      <label class="field">
+        <span>Your name</span>
+        <input id="name" maxlength="20" autocomplete="nickname" placeholder="What your partner sees">
+      </label>
+      <button id="start" class="primary">Start a Jam</button>
+      <form id="join" class="join">
+        <label class="field">
+          <span>Got a code?</span>
+          <input id="code" maxlength="6" autocomplete="off" spellcheck="false" placeholder="ABC234">
+        </label>
+        <button class="secondary">Join</button>
       </form>
-      <form id="join-panel" hidden>
-        <label for="invite">Private invitation</label>
-        <textarea id="invite" placeholder="Paste the full invitation your partner shared" required spellcheck="false" autocomplete="off"></textarea>
-        <p class="hint">Have YouTube Music open in another tab.</p>
-        <button class="primary" type="submit">Join session <span aria-hidden="true">↗</span></button>
-      </form>
+      <p class="error" id="error" role="alert"></p>
     </section>
-    <section id="session" hidden>
-      <div class="session-heading"><span id="status-dot" class="dot"></span><h2 id="status" aria-live="polite">Connecting…</h2></div>
-      <p id="track" class="track"></p>
-      <div id="invite-box" hidden>
-        <p>Your partner can join with this private invitation.</p>
-        <button id="copy-invite" class="primary">Copy invitation <span aria-hidden="true">↗</span></button>
-        <textarea id="invite-fallback" readonly hidden aria-label="Invitation to copy"></textarea>
+
+    <section data-view="live" hidden>
+      <div class="duo" aria-hidden="true"><span class="dot me"></span><span class="dot them"></span></div>
+      <p class="caption" id="caption"></p>
+      <div class="code" id="bigcode" aria-label="Jam code"></div>
+      <p class="hint" id="hint"></p>
+      <div class="np" id="np" hidden>
+        <img id="np-art" alt="">
+        <div><div class="np-t" id="np-title"></div><div class="np-a" id="np-artist"></div></div>
       </div>
-      <div id="pairing" class="pairing" hidden><span>Pairing code</span><strong id="pairing-code"></strong><p>Check that your partner sees the same code.</p></div>
-      <button id="approve" class="primary" hidden>Confirm my partner</button>
-      <p class="hint">Use your normal YouTube Music controls. Songs and the queue are shared; your volume and library stay yours.</p>
-      <button id="end" class="secondary">End session</button>
-      <button id="discard" class="text-button" hidden>Leave this device · server closure unconfirmed</button>
+      <p class="meta" id="meta"></p>
+      <button id="leave" class="ghost"></button>
     </section>
-    <button id="diagnostics" class="text-button">Check connection to YouTube Music</button>
-    <p id="diagnostic-result" class="hint" role="status"></p>
+
+    <section data-view="ended" hidden>
+      <h1>Jam ended</h1>
+      <p class="lede" id="ended-reason"></p>
+      <button id="dismiss" class="primary">Done</button>
+    </section>
+
+    <p class="notab" id="notab" hidden>Open <a href="https://music.youtube.com" target="_blank">YouTube Music</a> in a tab so the Jam can play there.</p>
   </main>
-  <footer><span class="lock" aria-hidden="true">◈</span> Private invite · Encrypted session · No listening history</footer>
   <script src="popup.js" type="module"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "yt-music-together-relay",
+  "name": "yt-music-together",
   "main": "relay/worker.js",
   "compatibility_date": "2026-10-08",
   "workers_dev": true,
