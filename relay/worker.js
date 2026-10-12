@@ -17,7 +17,7 @@ export default {
   }
 };
 
-export class MusicRoom {
+export class Room {
   constructor(state) {
     this.state = state;
   }
@@ -65,10 +65,12 @@ export class MusicRoom {
     return ws.deserializeAttachment() || {};
   }
 
-  presence() {
-    const peers = this.state.getWebSockets().map(ws => this.tag(ws));
-    const frame = JSON.stringify({ t: 'peers', peers });
-    for (const ws of this.state.getWebSockets()) ws.send(frame);
+  presence(leaving) {
+    const sockets = this.state.getWebSockets().filter(ws => ws !== leaving);
+    const frame = JSON.stringify({ t: 'peers', peers: sockets.map(ws => this.tag(ws)) });
+    for (const ws of sockets) {
+      try { ws.send(frame); } catch {}
+    }
   }
 
   async webSocketMessage(ws, data) {
@@ -101,7 +103,7 @@ export class MusicRoom {
       await this.state.storage.put('hostGoneAt', Date.now());
       await this.state.storage.setAlarm(Date.now() + HOST_GRACE);
     }
-    this.presence();
+    this.presence(ws);
   }
 
   async alarm() {

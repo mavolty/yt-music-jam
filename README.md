@@ -27,13 +27,12 @@ music.youtube.com tab                         Cloudflare
 
 ## Set up
 
-1. Deploy the relay once. You need a Cloudflare API token made from the "Edit Cloudflare Workers" template.
+1. The relay is live at `https://yt-music-together.saddamh2403.workers.dev` (already set in `extension/config.js`). To redeploy after changing `relay/worker.js`:
    ```sh
    npm install
-   CLOUDFLARE_API_TOKEN=... npm run deploy
+   CLOUDFLARE_API_TOKEN=... npm run deploy   # token from the "Edit Cloudflare Workers" template
    ```
-2. Put the printed `https://….workers.dev` URL in `extension/config.js`.
-3. On both laptops, open `chrome://extensions`, turn on Developer mode, choose **Load unpacked** and pick the `extension` folder. Or run `npm run pack` and share `yt-music-jam.zip`.
+2. On both laptops, open `chrome://extensions`, turn on Developer mode, choose **Load unpacked** and pick the `extension` folder. Or run `npm run pack` and share `yt-music-jam.zip`.
 
 ## Use
 
